@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="CompilerConfiguration">
+    <option name="USE_RELEASE_OPTION" value="false" />
+    <annotationProcessing>
+      <profile default="true" name="Default" enabled="true" />
+      <profile name="Maven default annotation processors profile" enabled="true">
+        <sourceOutputDir name="target/generated-sources/annotations" />
+        <sourceTestOutputDir name="target/generated-test-sources/test-annotations" />
+        <outputRelativeToContentRoot value="true" />
+        <module name="DlabRNA-admin-service" />
+        <module name="DlabRNA-ai-service" />
+        <module name="DlabRNA-config-service" />
+        <module name="DlabRNA-data-service" />
+        <module name="DlabRNA-agent-service" />
+        <module name="DlabRNA-user-service" />
+        <module name="DlabRNA-upload-service" />
+        <module name="DlabRNA-common" />
+        <module name="DlabRNA-gateway-service" />
+      </profile>
+    </annotationProcessing>
+    <bytecodeTargetLevel target="22">
+      <module name="DlabRNA-registry-service" target="11" />
+    </bytecodeTargetLevel>
+  </component>
+  <component name="JavacSettings">
+    <option name="ADDITIONAL_OPTIONS_OVERRIDE">
+      <module name="DlabRNA-admin-service" options="-parameters" />
+      <module name="DlabRNA-agent-service" options="-parameters" />
+      <module name="DlabRNA-ai-service" options="-parameters" />
+      <module name="DlabRNA-common" options="-parameters" />
+      <module name="DlabRNA-config-service" options="-parameters" />
+      <module name="DlabRNA-data-service" options="-parameters" />
+      <module name="DlabRNA-gateway-service" options="-parameters" />
+      <module name="DlabRNA-registry-service" options="-parameters" />
+      <module name="DlabRNA-upload-service" options="-parameters" />
+      <module name="DlabRNA-user-service" options="-parameters" />
+    </option>
+  </component>
+</project>

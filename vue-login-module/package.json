@@ -1,0 +1,24 @@
+{
+  "name": "vue-login-module",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "axios": "^1.12.2",
+    "vue": "^3.5.22",
+    "vue-router": "^4.6.2"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^6.0.1"
+  }
+}
