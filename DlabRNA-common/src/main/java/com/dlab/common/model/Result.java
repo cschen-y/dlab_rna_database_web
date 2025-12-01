@@ -11,7 +11,7 @@ import lombok.NoArgsConstructor;
 @NoArgsConstructor
 @AllArgsConstructor
 public class Result<T> {
-    private Integer code;
+    private int code;
     private String message;
     private T data;
 
@@ -27,7 +27,7 @@ public class Result<T> {
         return new Result<>(200, message, data);
     }
 
-    public static <T> Result<T> error(Integer code, String message) {
+    public static <T> Result<T> error(int code, String message) {
         return new Result<>(code, message, null);
     }
 

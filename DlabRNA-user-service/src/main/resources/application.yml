@@ -1,5 +1,5 @@
 server:
-  port: 8081
+  port: 18081
 
 spring:
   application:
@@ -9,6 +9,11 @@ spring:
     username: root
     password: 123456
     driver-class-name: com.mysql.cj.jdbc.Driver
+    hikari:
+      max-lifetime: 1800000   # 30 分钟，必须比 MySQL wait_timeout 小
+      idle-timeout: 600000    # 10 分钟
+      keepalive-time: 300000  # 5 分钟，定期 ping 连接
+      connection-timeout: 30000
   security:
     user:
       name: admin
@@ -16,7 +21,7 @@ spring:
   cloud:
     nacos:
       discovery:
-        enabled: false
+        server-addr: http://localhost:8848
 
 mybatis:
   mapper-locations: classpath:/mapper/*.xml
@@ -25,4 +30,4 @@ mybatis:
 # JWT配置
 jwt:
  secret: dlabrna-user-service-secret-key
- expiration: 60 # 24小时
+ expiration: 60000 # 24小时

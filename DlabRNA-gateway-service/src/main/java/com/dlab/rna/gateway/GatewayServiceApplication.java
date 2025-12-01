@@ -1,4 +1,4 @@
-﻿package com.dlab.rna.gateway;
+package com.dlab.rna.gateway;
 
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;

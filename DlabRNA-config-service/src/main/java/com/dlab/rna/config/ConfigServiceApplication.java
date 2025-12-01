@@ -1,4 +1,4 @@
-﻿package com.dlab.rna.config;
+package com.dlab.rna.config;
 
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;

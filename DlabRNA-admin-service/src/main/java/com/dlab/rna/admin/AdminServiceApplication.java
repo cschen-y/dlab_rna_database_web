@@ -1,4 +1,4 @@
-﻿package com.dlab.rna.admin;
+package com.dlab.rna.admin;
 
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;

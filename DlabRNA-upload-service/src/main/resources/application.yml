@@ -1,11 +1,101 @@
-﻿server:
-  port: 8083
+server:
+  port: 18083
 
 spring:
   application:
     name: upload-service
+  ai:
+    openai:
+      base-url: https://dashscope.aliyuncs.com/compatible-mode/
+      api-key: sk-f46923e8751341f4b3147a4300d38aaf
+      embedding:
+        options:
+          model: text-embedding-v4
+  datasource:
+    mysql:
+      username: root
+      password: 123456
+      url: jdbc:mysql://115.190.5.32:13306/dlabrna_user?useUnicode=true&characterEncoding=utf8&autoReconnect=true&zeroDateTimeBehavior=convertToNull&serverTimezone=Asia/Shanghai&useSSL=true
+      driver-class-name: com.mysql.cj.jdbc.Driver
+      type: com.zaxxer.hikari.HikariDataSource
+      hikari:
+        pool-name: Retail_HikariCP
+        minimum-idle: 15 #最小空闲连接数量
+        idle-timeout: 180000 #空闲连接存活最大时间，默认600000（10分钟）
+        maximum-pool-size: 25 #连接池最大连接数，默认是10
+        auto-commit: true  #此属性控制从池返回的连接的默认自动提交行为,默认值：true
+        max-lifetime: 1800000 #此属性控制池中连接的最长生命周期，值0表示无限生命周期，默认1800000即30分钟
+        connection-timeout: 30000 #数据库连接超时时间,默认30秒，即30000
+        connection-test-query: SELECT 1
+    pgvector:
+      driver-class-name: org.postgresql.Driver
+      username: postgres
+      password: postgres
+      url: jdbc:postgresql://115.190.5.32:15432/ai-rag-knowledge
+      type: com.zaxxer.hikari.HikariDataSource
+      hikari:
+        maximum-pool-size: 5
+        minimum-idle: 2
+        idle-timeout: 30000
+        connection-timeout: 30000
+  rabbitmq:
+    host: 115.190.5.32
+    port: 5672
+    username: admin
+    password: admin
+    listener:
+      simple:
+        acknowledge-mode: manual
+  cloud:
+    nacos:
+      discovery:
+        server-addr: http://localhost:8848
+  data:
+    redis:
+      host: 115.190.5.32
+      port: 16379
+  servlet:
+    multipart:
+      max-file-size: 1GB
+      max-request-size: 1GB
 
-eureka:
-  client:
-    service-url:
-      defaultZone: http://localhost:8761/eureka/
+
+
+storage:
+  minio:
+    endpoint:  http://127.0.0.1:9000
+    access-key: minioadmin
+    secret-key: minioadmin
+    bucket: uploads
+  chunk:
+    min-size-mb: 5
+    max-size-mb: 32
+  reconcile:
+    cron: "0 */5 * * * ?"
+
+mybatis:
+  mapper-locations: classpath:/mapper/*.xml
+  type-aliases-package: com.dlab.rna.upload.model
+
+embedding:
+  dashscope:
+    endpoint: https://dashscope.aliyuncs.com/api/embeddings
+    api-key: ${DASHSCOPE_API_KEY:}
+    model: ${DASHSCOPE_MODEL:text-embedding-v1}
+
+kb:
+  chunk:
+    size: ${KB_CHUNK_SIZE:100}
+    overlap: ${KB_CHUNK_OVERLAP:100}
+
+ocr:
+  baidu:
+    endpoint: ${OCR_BAIDU_ENDPOINT:https://aip.baidubce.com/rest/2.0/ocr/v1/general_basic}
+    access-token: ${OCR_BAIDU_ACCESS_TOKEN:24.d784a1fcd8f636dbeeba363cd05b1ccd.2592000.1766574668.282335-120995884}
+    language-type: ${OCR_BAIDU_LANGUAGE_TYPE:CHN_ENG}
+    detect-direction: ${OCR_BAIDU_DETECT_DIRECTION:false}
+    detect-language: ${OCR_BAIDU_DETECT_LANGUAGE:false}
+    paragraph: ${OCR_BAIDU_PARAGRAPH:false}
+    probability: ${OCR_BAIDU_PROBABILITY:false}
+
+

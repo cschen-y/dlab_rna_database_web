@@ -1,4 +1,4 @@
-﻿package com.dlab.rna.ai;
+package com.dlab.rna.ai;
 
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;

@@ -4,12 +4,14 @@ import App from "./App.vue";
 import Login from "./components/Login.vue";
 import Register from "./components/Register.vue";
 import HelloWorld from "./components/HelloWorld.vue";
+import Upload from "./components/Upload.vue";
 
 const routes = [
   { path: "/", component: Login },
   { path: "/login", component: Login },
   { path: "/register", component: Register },
   { path: "/hello", component: HelloWorld, meta: { requiresAuth: true } },
+  { path: "/upload", component: Upload },
 ];
 
 const router = createRouter({

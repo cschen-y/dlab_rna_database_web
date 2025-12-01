@@ -46,7 +46,7 @@ export default {
         .then((response) => {
           if (response.data.token) {
             localStorage.setItem("token", response.data.token);
-            this.$router.push("/hello");
+            this.$router.push("/upload");
           } else {
             this.errorMessage = response.data.message || "登录失败，请稍后重试";
           }
