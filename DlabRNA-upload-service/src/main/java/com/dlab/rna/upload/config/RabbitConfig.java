@@ -1,5 +1,6 @@
 package com.dlab.rna.upload.config;
 
+import com.rabbitmq.stream.Address;
 import org.springframework.amqp.core.Binding;
 import org.springframework.amqp.core.BindingBuilder;
 import org.springframework.amqp.core.DirectExchange;
@@ -8,6 +9,11 @@ import org.springframework.amqp.rabbit.config.SimpleRabbitListenerContainerFacto
 import org.springframework.amqp.rabbit.connection.ConnectionFactory;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.annotation.Lazy;
+import com.rabbitmq.stream.Environment;
+
+import java.util.List;
 
 @Configuration
 public class RabbitConfig {
@@ -68,29 +74,16 @@ public class RabbitConfig {
     }
 
     @Bean
-    public Queue splitQueue() { return new Queue(SPLIT_QUEUE, true); }
-    @Bean
-    public Queue parsedQueue() { return new Queue(PARSED_QUEUE, true); }
-    @Bean
-    public Queue chunksQueue() { return new Queue(CHUNKS_QUEUE, true); }
-    @Bean
-    public Queue vectorsQueue() { return new Queue(VECTORS_QUEUE, true); }
+    public Environment streamEnvironment(
+            @Value("${spring.rabbitmq.username}") String username,
+            @Value("${spring.rabbitmq.password}") String password) {
 
-    @Bean
-    public Binding bindSplit(DirectExchange ex, Queue splitQueue) {
-        return BindingBuilder.bind(splitQueue).to(ex).with(SPLIT_QUEUE);
-    }
-    @Bean
-    public Binding bindParsed(DirectExchange ex, Queue parsedQueue) {
-        return BindingBuilder.bind(parsedQueue).to(ex).with(PARSED_QUEUE);
-    }
-    @Bean
-    public Binding bindChunks(DirectExchange ex, Queue chunksQueue) {
-        return BindingBuilder.bind(chunksQueue).to(ex).with(CHUNKS_QUEUE);
-    }
-    @Bean
-    public Binding bindVectors(DirectExchange ex, Queue vectorsQueue) {
-        return BindingBuilder.bind(vectorsQueue).to(ex).with(VECTORS_QUEUE);
+        return Environment.builder()
+                .username(username)
+                .password(password)
+                .addressResolver(address ->
+                        new Address("115.190.5.32", 5552))
+                .build();
     }
 
     @Bean

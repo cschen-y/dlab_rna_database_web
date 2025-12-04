@@ -2,46 +2,43 @@ package com.dlab.rna.upload.mq;
 
 import com.dlab.rna.upload.config.RabbitConfig;
 import com.dlab.rna.upload.service.EmbeddingService;
-import com.rabbitmq.client.Channel;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.JsonNode;
-import org.springframework.amqp.rabbit.annotation.RabbitListener;
-import org.springframework.amqp.rabbit.core.RabbitTemplate;
-import org.springframework.amqp.support.AmqpHeaders;
-import org.springframework.messaging.handler.annotation.Header;
-import org.springframework.messaging.handler.annotation.Payload;
+import com.rabbitmq.stream.Environment;
+import jakarta.annotation.PostConstruct;
 import org.springframework.stereotype.Component;
 
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import lombok.extern.slf4j.Slf4j;
 
 @Component
+@Slf4j
 public class EmbeddingConsumer {
     private final EmbeddingService embeddingService;
-    private final RabbitTemplate rabbitTemplate;
     private final ObjectMapper mapper = new ObjectMapper();
+    private final Environment env;
 
-    public EmbeddingConsumer(EmbeddingService embeddingService, RabbitTemplate rabbitTemplate) {
+    public EmbeddingConsumer(EmbeddingService embeddingService, Environment env) {
         this.embeddingService = embeddingService;
-        this.rabbitTemplate = rabbitTemplate;
+        this.env = env;
     }
 
-    @RabbitListener(queues = RabbitConfig.CHUNKS_QUEUE, containerFactory = "manualAckContainerFactory")
-    public void onMessage(@Payload String message,
-                          Channel channel,
-                          @Header(AmqpHeaders.DELIVERY_TAG) long deliveryTag) {
-        try {
-            JsonNode root = mapper.readTree(message);
-            String text = root.path("text").asText();
-            EmbeddingService.Result r = embeddingService.embed(text, "test");
-            if (!r.ok) {
-                channel.basicAck(deliveryTag, false);
-                return;
-            }
-            channel.basicAck(deliveryTag, false);
-        } catch (Exception e) {
-            try { channel.basicAck(deliveryTag, false); } catch (Exception ignored) {}
-        }
+    @PostConstruct
+    public void start() {
+        try { env.streamCreator().stream(RabbitConfig.CHUNKS_QUEUE).create(); } catch (Throwable ignored) {}
+        env.consumerBuilder()
+                .stream(RabbitConfig.CHUNKS_QUEUE)
+                .name("chunks-consumer-group")
+                .offset(com.rabbitmq.stream.OffsetSpecification.first())
+                .messageHandler((ctx, msg) -> {
+                    try {
+                        String message = new String(msg.getBodyAsBinary());
+                        JsonNode root = mapper.readTree(message);
+                        String text = root.path("text").asText();
+                        EmbeddingService.Result r = embeddingService.embed(text, "test");
+                        log.info("embedding result: {}", r);
+                    } catch (Exception ignored) {}
+                    ctx.storeOffset();
+                })
+                .build();
     }
 }

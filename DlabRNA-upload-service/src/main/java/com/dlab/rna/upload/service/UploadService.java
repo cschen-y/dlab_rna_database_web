@@ -2,6 +2,7 @@ package com.dlab.rna.upload.service;
 
 import com.dlab.rna.upload.config.StorageProperties;
 import com.dlab.rna.upload.model.UploadTask;
+import com.rabbitmq.stream.Environment;
 import com.dlab.rna.upload.mapper.UploadTaskMapper;
 import io.minio.ComposeObjectArgs;
 import io.minio.ComposeSource;
@@ -26,12 +27,14 @@ public class UploadService {
     private final StorageProperties props;
     private final StringRedisTemplate redis;
     private final UploadTaskMapper mapper;
+    private final Environment env;
 
-    public UploadService(MinioClient minioClient, StorageProperties props, StringRedisTemplate redis, UploadTaskMapper mapper) {
+    public UploadService(MinioClient minioClient, StorageProperties props, StringRedisTemplate redis, UploadTaskMapper mapper, Environment env) {
         this.minioClient = minioClient;
         this.props = props;
         this.redis = redis;
         this.mapper = mapper;
+        this.env = env;
     }
 
     @Transactional
@@ -77,6 +80,8 @@ public class UploadService {
         String object = fileId + "/chunks/" + index;
         Boolean exists = redis.opsForSet().isMember(keyParts(fileId), String.valueOf(index));
         if (Boolean.TRUE.equals(exists)) return object;
+        
+        
         try (InputStream in = file.getInputStream()) {
             minioClient.putObject(PutObjectArgs.builder()
                     .bucket(props.getMinio().getBucket())
@@ -109,7 +114,7 @@ public class UploadService {
     @Transactional
     public void finishMerged(String fileId) {
         mapper.updateState(fileId, "COMPLETED", LocalDateTime.now());
-        redis.opsForValue().set(keyState(fileId), "COMPLETED");
+        redis.opsForValue().set(keyState(fileId), "COMPLETED"); 
         redis.delete(keyLock(fileId));
         redis.delete(keyError(fileId));
     }

@@ -6,6 +6,9 @@ import com.dlab.rna.upload.api.dto.InitResponse;
 import com.dlab.rna.upload.api.dto.StatusResponse;
 import com.dlab.rna.upload.config.RabbitConfig;
 import com.dlab.rna.upload.model.UploadTask;
+import com.rabbitmq.stream.Environment;
+import com.rabbitmq.stream.Producer;
+import jakarta.annotation.PostConstruct;
 import com.dlab.rna.upload.service.UploadService;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.validation.annotation.Validated;
@@ -16,11 +19,18 @@ import org.springframework.web.multipart.MultipartFile;
 @RequestMapping("/upload")
 public class UploadController {
     private final UploadService service;
-    private final RabbitTemplate rabbitTemplate;
+    private final Environment env;
+    private Producer splitProducer;
 
-    public UploadController(UploadService service, RabbitTemplate rabbitTemplate) {
+    public UploadController(UploadService service, Environment env) {
         this.service = service;
-        this.rabbitTemplate = rabbitTemplate;
+        this.env = env;
+    }
+
+    @PostConstruct
+    public void initStream() {
+        try { env.streamCreator().stream(RabbitConfig.SPLIT_QUEUE).create(); } catch (Throwable ignored) {}
+        splitProducer = env.producerBuilder().stream(RabbitConfig.SPLIT_QUEUE).build();
     }
 
     @PostMapping("/init")
@@ -44,7 +54,16 @@ public class UploadController {
     public Result<Void> merge(@PathVariable String fileId) throws Exception {
         if (!service.canMerge(fileId)) return Result.error(400, "分片未完成");
         service.markMerging(fileId);
-        rabbitTemplate.convertAndSend(RabbitConfig.EXCHANGE, RabbitConfig.MERGE_QUEUE, fileId);
+        try{
+            service.compose(fileId);
+        }catch(Exception e){
+            service.failMerged(fileId, e.getMessage());
+            return Result.error(500, e.getMessage());
+        }
+        service.finishMerged(fileId);
+        String object = service.getStoragePath(fileId);
+        String payload = "{\"fileId\":\"" + fileId + "\",\"object\":\"" + object + "\"}";
+        splitProducer.send(splitProducer.messageBuilder().addData(payload.getBytes()).build(), s -> {});
         return Result.success();
     }
 
