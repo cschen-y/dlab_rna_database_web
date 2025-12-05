@@ -35,6 +35,7 @@
 <script setup>
 import { ref, computed } from 'vue'
 import axios from 'axios'
+import { sha256 } from 'js-sha256'
 
 const api = axios.create({ baseURL: '/upload/' })
 
@@ -56,6 +57,9 @@ const percent = computed(() => {
   if (!progress.value.total) return 0
   return (progress.value.done * 100) / progress.value.total
 })
+
+const MAX_CHUNK_RETRY = 3
+const MAX_MERGE_RETRY = 3
 
 function pickFile() {
   fileInput.value && fileInput.value.click()
@@ -99,12 +103,22 @@ async function start() {
     chunkSizeMb.value = Math.round(serverChunkSize / 1024 / 1024)
     const total = initRes.data.data.totalChunks || Math.ceil(file.value.size / serverChunkSize)
     const uploaded = initRes.data.data.uploadedIndices || []
+    const missing = initRes.data.data.missingIndices || []
     const uploadedSet = new Set(uploaded)
     progress.value = { done: uploaded.length, total }
     state.value = 'UPLOADING'
-    await uploadChunks(file.value, fileId.value, serverChunkSize, uploadedSet)
+    if (missing.length > 0) {
+      await uploadSpecificChunks(file.value, fileId.value, serverChunkSize, missing)
+    } else {
+      await uploadChunks(file.value, fileId.value, serverChunkSize, uploadedSet)
+    }
     if (!canceled.value) {
-      await api.post(`/${fileId.value}/merge`)
+      const merged = await tryMergeWithMissing(fileId.value, serverChunkSize)
+      if (!merged) {
+        message.value = '合并失败：缺失分片重试已达上限'
+        running.value = false
+        return
+      }
       await pollUntilFinished()
     }
   } catch (err) {
@@ -133,18 +147,26 @@ async function uploadChunks(f, fid, size, skipSet) {
     form.append('file', blob)
     const controller = new AbortController()
     controllers.push(controller)
+    let success = false
+    for (let attempt = 0; attempt < MAX_CHUNK_RETRY && !success; attempt++) {
+      try {
+        await api.put(`/${fid}/chunk/${current}`, form, {
+          headers: { 'Content-Type': 'multipart/form-data' },
+          signal: controller.signal
+        })
+        success = true
+        if (!canceled.value) {
+          progress.value.done++
+        }
+      } catch (e) {
+        if (attempt === MAX_CHUNK_RETRY - 1) {
+          if (!canceled.value) message.value = `分片上传失败（索引 ${current}）`
+          throw e
+        }
+        await new Promise(r => setTimeout(r, 500))
+      }
+    }
     try {
-      await api.put(`/${fid}/chunk/${current}`, form, {
-        headers: { 'Content-Type': 'multipart/form-data' },
-        signal: controller.signal
-      })
-      if (!canceled.value) {
-        progress.value.done++
-      }
-    } catch (e) {
-      if (!canceled.value) {
-        message.value = '分片上传失败'
-      }
     } finally {
       controllers = controllers.filter(c => c !== controller)
     }
@@ -152,6 +174,67 @@ async function uploadChunks(f, fid, size, skipSet) {
   }
   const tasks = Array.from({ length: Math.min(concurrency, total) }, () => next())
   await Promise.all(tasks)
+}
+
+async function uploadSpecificChunks(f, fid, size, indices) {
+  const concurrency = 3
+  let pos = 0
+  async function next() {
+    if (canceled.value) return
+    if (pos >= indices.length) return
+    const current = indices[pos++]
+    await waitIfPaused()
+    if (canceled.value) return
+    const start = current * size
+    const end = Math.min(f.size, start + size)
+    const blob = f.slice(start, end)
+    const form = new FormData()
+    form.append('file', blob)
+    const controller = new AbortController()
+    controllers.push(controller)
+    let success = false
+    for (let attempt = 0; attempt < MAX_CHUNK_RETRY && !success; attempt++) {
+      try {
+        await api.put(`/${fid}/chunk/${current}`, form, {
+          headers: { 'Content-Type': 'multipart/form-data' },
+          signal: controller.signal
+        })
+        success = true
+        if (!canceled.value) {
+          progress.value.done++
+        }
+      } catch (e) {
+        if (attempt === MAX_CHUNK_RETRY - 1) {
+          if (!canceled.value) message.value = `分片上传失败（索引 ${current}）`
+          throw e
+        }
+        await new Promise(r => setTimeout(r, 500))
+      }
+    }
+    try {
+    } finally {
+      controllers = controllers.filter(c => c !== controller)
+    }
+    if (!canceled.value) return next()
+  }
+  const tasks = Array.from({ length: Math.min(concurrency, indices.length) }, () => next())
+  await Promise.all(tasks)
+}
+
+async function tryMergeWithMissing(fid, size) {
+  for (let attempt = 0; attempt < MAX_MERGE_RETRY; attempt++) {
+    try {
+      await api.post(`/${fid}/merge`)
+      return true
+    } catch (e) {
+      if (!(e && e.response && e.response.status === 400)) throw e
+      const st = await api.get(`/${fid}/status`)
+      const miss = st.data?.data?.missingIndices || []
+      if (!Array.isArray(miss) || miss.length === 0) return false
+      await uploadSpecificChunks(file.value, fid, size, miss)
+    }
+  }
+  return false
 }
 
 async function pollStatus() {
@@ -185,10 +268,26 @@ async function abort() {
 }
 
 async function calcSha256(f) {
-  const buf = await f.arrayBuffer()
-  const digest = await crypto.subtle.digest('SHA-256', buf)
-  const bytes = Array.from(new Uint8Array(digest))
-  return bytes.map(b => b.toString(16).padStart(2, '0')).join('')
+  const hash = sha256.create()
+  if (f && typeof f.stream === 'function') {
+    const reader = f.stream().getReader()
+    while (true) {
+      const { value, done } = await reader.read()
+      if (done) break
+      if (value && value.length) hash.update(value)
+    }
+  } else {
+    const chunkSize = 200 * 1024 * 1024
+    let offset = 0
+    while (offset < f.size) {
+      const end = Math.min(offset + chunkSize, f.size)
+      const blob = f.slice(offset, end)
+      const buf = await blob.arrayBuffer()
+      hash.update(new Uint8Array(buf))
+      offset = end
+    }
+  }
+  return hash.hex()
 }
 
 function pause() {

@@ -33,8 +33,6 @@ public class EmbeddingService {
         catch (Exception e){
             return  Result.error("0001",e.getMessage());
         }
-
-
     }
 
     public static class Result {

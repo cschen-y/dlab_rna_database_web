@@ -3,18 +3,14 @@ package com.dlab.rna.upload.mq;
 import com.dlab.rna.upload.config.RabbitConfig;
 import com.dlab.rna.upload.repo.VectorRepository;
 import com.dlab.rna.upload.service.ChunkService;
-import com.itextpdf.kernel.pdf.PdfDocument;
-import com.itextpdf.kernel.pdf.PdfReader;
-import com.itextpdf.kernel.pdf.canvas.parser.PdfCanvasProcessor;
-import com.itextpdf.kernel.pdf.canvas.parser.PdfTextExtractor;
-import com.itextpdf.kernel.pdf.canvas.parser.listener.ITextExtractionStrategy;
-import com.itextpdf.kernel.pdf.canvas.parser.listener.SimpleTextExtractionStrategy;
-import com.rabbitmq.stream.Environment;
-import com.rabbitmq.stream.Producer;
+import com.dlab.rna.upload.service.EmbeddingService;
+
+import org.springframework.kafka.core.KafkaTemplate;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.JsonNode;
 import lombok.extern.slf4j.Slf4j;
 import jakarta.annotation.PostConstruct;
+import org.springframework.kafka.annotation.KafkaListener;
 import org.apache.poi.xwpf.extractor.XWPFWordExtractor;
 import org.apache.poi.xwpf.usermodel.XWPFDocument;
 import org.springframework.stereotype.Component;
@@ -33,9 +29,7 @@ import java.io.InputStream;
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.*;
-import java.util.stream.Collectors;
 
-import static io.lettuce.core.pubsub.PubSubOutput.Type.message;
 
 @Component
 @Slf4j
@@ -45,15 +39,15 @@ public class ChunkConsumer {
     private final ObjectMapper mapper = new ObjectMapper();
     private final MinioClient minioClient;
     private final StorageProperties props;
-    private final Environment env;
-    private Producer chunksProducer;
+    private final KafkaTemplate<String, String> kafkaTemplate;
 
-    public ChunkConsumer(ChunkService chunkService, VectorRepository repo, MinioClient minioClient, StorageProperties props, Environment env) {
+
+    public ChunkConsumer(ChunkService chunkService, VectorRepository repo, MinioClient minioClient, StorageProperties props, KafkaTemplate<String, String> kafkaTemplate, EmbeddingService embeddingService) {
         this.chunkService = chunkService;
         this.repo = repo;
         this.minioClient = minioClient;
         this.props = props;
-        this.env = env;
+        this.kafkaTemplate = kafkaTemplate;
     }
 
     @PostConstruct
@@ -62,139 +56,77 @@ public class ChunkConsumer {
         System.setProperty("pdfbox.fontcache", "false");
     }
 
-    @PostConstruct
-    public void start() {
+    @KafkaListener(topics = RabbitConfig.SPLIT_QUEUE, groupId = "split-consumer-group", containerFactory = "kafkaListenerContainerFactory")
+    public void onMessage(String message, org.springframework.kafka.support.Acknowledgment ack) {
         try {
-            env.streamCreator().stream(RabbitConfig.SPLIT_QUEUE).create();
-        } catch (Throwable ignored) {
-        }
-        try {
-            env.streamCreator().stream(RabbitConfig.CHUNKS_QUEUE).create();
-        } catch (Throwable ignored) {
-        }
+            JsonNode root = mapper.readTree(message);
 
-        chunksProducer = env.producerBuilder().stream(RabbitConfig.CHUNKS_QUEUE).build();
+            String fileId = root.path("fileId").asText();
+            String object = root.path("object").asText();
 
-        env.consumerBuilder()
-                .stream(RabbitConfig.SPLIT_QUEUE)
-                .name("split-consumer-group")
-                .offset(com.rabbitmq.stream.OffsetSpecification.first())
-                .messageHandler((ctx, msg) -> {
+            int dot = object.lastIndexOf('.');
+            String ext = (dot > 0 ? object.substring(dot + 1).toLowerCase() : "");
 
-                    String message = null;
-                    try {
-                        message = new String(msg.getBodyAsBinary());
-                        JsonNode root = mapper.readTree(message);
+            log.info("DEBUG object={}, ext={}, isDoc={}", object, ext,
+                    (ext.equals("txt") || ext.equals("md") || ext.equals("csv") || ext.equals("json")
+                            || ext.equals("log") || ext.equals("pdf") || ext.equals("docx")));
 
-                        String fileId = root.path("fileId").asText();
-                        String object = root.path("object").asText();
+            InputStream in = minioClient.getObject(
+                    GetObjectArgs.builder().bucket(props.getMinio().getBucket()).object(object).build()
+            );
 
-                        int dot = object.lastIndexOf('.');
-                        String ext = (dot > 0 ? object.substring(dot + 1).toLowerCase() : "");
+            byte[] buf = in.readAllBytes();
+            String text = "";
 
-                        log.info("DEBUG object={}, ext={}, isDoc={}", object, ext,
-                                (ext.equals("txt") || ext.equals("md") || ext.equals("csv") || ext.equals("json")
-                                        || ext.equals("log") || ext.equals("pdf") || ext.equals("docx")));
-
-                        // Read from MinIO
-                        InputStream in = minioClient.getObject(
-                                GetObjectArgs.builder().bucket(props.getMinio().getBucket()).object(object).build()
-                        );
-
-                        byte[] buf = in.readAllBytes();
-                        String text = "";
-
-                        switch (ext) {
-                            case "txt":
-                            case "md":
-                            case "csv":
-                            case "json":
-                            case "log":
-                                text = new String(buf, StandardCharsets.UTF_8);
-                                break;
-
-                            case "pdf":
-                                ExecutorService executor = new ThreadPoolExecutor(
-                                        10, 100, 1, TimeUnit.MINUTES,
-                                        new LinkedBlockingQueue<>()
-                                );
-                                int numberOfPages;
-                                try (PdfDocument pdfDoc = new PdfDocument(new PdfReader(new ByteArrayInputStream(buf)))) {
-                                    numberOfPages = pdfDoc.getNumberOfPages();
-                                }
-
-                                List<CompletableFuture<String>> futures = new ArrayList<>();
-
-                                for (int i = 1; i <= numberOfPages; i++) {
-                                    final int pageIndex = i;
-
-                                    CompletableFuture<String> cf = CompletableFuture.supplyAsync(() -> {
-                                        try (PdfDocument local =
-                                                     new PdfDocument(new PdfReader(new ByteArrayInputStream(buf)))) {
-
-                                            ITextExtractionStrategy strategy = new SimpleTextExtractionStrategy();
-
-                                            return PdfTextExtractor.getTextFromPage(
-                                                    local.getPage(pageIndex),
-                                                    strategy
-                                            );
-
-                                        } catch (Exception e) {
-                                            throw new RuntimeException(e);
-                                        }
-                                    }, executor);
-
-                                    futures.add(cf);
-                                }
-                                text = futures.stream()
-                                        .map(CompletableFuture::join)  // join 不需要处理 checked exception
-                                        .collect(Collectors.joining());
-                                break;
-                            case "docx":
-                                try (XWPFDocument doc = new XWPFDocument(new ByteArrayInputStream(buf))) {
-                                    XWPFWordExtractor extractor = new XWPFWordExtractor(doc);
-                                    text = extractor.getText();
-                                }
-                                break;
-
-                            default:
-                                log.warn("Unsupported file type: {}", ext);
-                                return;
+            switch (ext) {
+                case "txt":
+                case "md":
+                case "csv":
+                case "json":
+                case "log":
+                case "docx":
+                    try (XWPFDocument docx = new XWPFDocument(new ByteArrayInputStream(buf))) {
+                        try (XWPFWordExtractor extractor = new XWPFWordExtractor(docx)) {
+                            text = extractor.getText();
                         }
-
-                        // Clean invalid chars
-                        text = text.replace("\u0000", "")
-                                .replaceAll("[\\x00-\\x1F]", " ")
-                                .trim();
-
-                        // split & insert
-                        for (ChunkService.Piece p : chunkService.split(fileId, object, text)) {
-                            String sha = chunkService.sha256(p.text);
-
-                            repo.upsertChunk(fileId, object, p.chunkId, p.text, p.offset, p.length, sha);
-
-                            Map<String, Object> payload = Map.of(
-                                    "fileId", fileId,
-                                    "object", object,
-                                    "chunkId", p.chunkId,
-                                    "text", p.text,
-                                    "offset", p.offset,
-                                    "length", p.length
-                            );
-
-                            chunksProducer.send(
-                                    chunksProducer.messageBuilder().addData(mapper.writeValueAsBytes(payload)).build(),
-                                    s -> {
-                                    }
-                            );
-                        }
-
-                    } catch (Exception e) {
-                        log.error("Error processing message: {}", e.getMessage());
                     }
+                    break;
 
-                    ctx.storeOffset();
-                })
-                .build();
+                case "pdf":
+                    try (PDDocument doc = PDDocument.load(new ByteArrayInputStream(buf))) {
+                        PDFTextStripper stripper = new PDFTextStripper();
+                        stripper.setSortByPosition(true);
+                        text = stripper.getText(doc);
+                    }
+                    break;
+
+                default:
+                    log.warn("Unsupported file type: {}", ext);
+                    return;
+            }
+
+            text = text.replace("\u0000", "")
+                    .replaceAll("[\\x00-\\x1F]", " ")
+                    .trim();
+
+            for (ChunkService.Piece p : chunkService.split(fileId, object, text)) {
+                String sha = chunkService.sha256(p.text);
+                repo.upsertChunk(fileId, object, p.chunkId, p.text, p.offset, p.length, sha);
+                Map<String, Object> payload = Map.of(
+                        "fileId", fileId,
+                        "object", object,
+                        "chunkId", p.chunkId,
+                        // "text", p.text,
+                        "offset", p.offset,
+                        "length", p.length
+                );
+                kafkaTemplate.send(RabbitConfig.CHUNKS_QUEUE, fileId, mapper.writeValueAsString(payload));
+            }
+
+            if (ack != null) ack.acknowledge();
+        } catch (Exception e) {
+            log.error("Error processing split message", e);
+            throw new RuntimeException(e);
+        }
     }
 }

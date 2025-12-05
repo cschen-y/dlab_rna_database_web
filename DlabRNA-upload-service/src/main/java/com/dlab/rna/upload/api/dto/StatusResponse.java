@@ -1,11 +1,15 @@
 package com.dlab.rna.upload.api.dto;
 
+import java.util.List;
+
 public class StatusResponse {
     private String state;
     private int doneChunks;
     private int totalChunks;
     private double percent;
     private String errorMessage;
+    private List<Integer> uploadedIndices;
+    private List<Integer> missingIndices;
 
     public String getState() { return state; }
     public void setState(String state) { this.state = state; }
@@ -17,4 +21,8 @@ public class StatusResponse {
     public void setPercent(double percent) { this.percent = percent; }
     public String getErrorMessage() { return errorMessage; }
     public void setErrorMessage(String errorMessage) { this.errorMessage = errorMessage; }
+    public List<Integer> getUploadedIndices() { return uploadedIndices; }
+    public void setUploadedIndices(List<Integer> uploadedIndices) { this.uploadedIndices = uploadedIndices; }
+    public List<Integer> getMissingIndices() { return missingIndices; }
+    public void setMissingIndices(List<Integer> missingIndices) { this.missingIndices = missingIndices; }
 }

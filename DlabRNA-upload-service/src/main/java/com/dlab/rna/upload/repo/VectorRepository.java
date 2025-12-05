@@ -67,6 +67,11 @@ public class VectorRepository {
         });
     }
 
+    public String getChunkContent(String fileId, String objectType, String chunkId) {
+        String sql = "select content from kb_chunks where file_id=? and object_type=? and chunk_id=?";
+        return jdbc.queryForObject(sql, new Object[]{fileId, objectType, chunkId}, String.class);
+    }
+
     private String toVectorString(List<Double> embedding) {
         StringBuilder sb = new StringBuilder();
         sb.append('[');

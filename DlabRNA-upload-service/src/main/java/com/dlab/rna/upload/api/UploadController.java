@@ -6,31 +6,24 @@ import com.dlab.rna.upload.api.dto.InitResponse;
 import com.dlab.rna.upload.api.dto.StatusResponse;
 import com.dlab.rna.upload.config.RabbitConfig;
 import com.dlab.rna.upload.model.UploadTask;
-import com.rabbitmq.stream.Environment;
-import com.rabbitmq.stream.Producer;
-import jakarta.annotation.PostConstruct;
+import org.springframework.kafka.core.KafkaTemplate;
 import com.dlab.rna.upload.service.UploadService;
-import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 @RestController
 @RequestMapping("/upload")
 public class UploadController {
+    private static final Logger log = LoggerFactory.getLogger(UploadController.class);
     private final UploadService service;
-    private final Environment env;
-    private Producer splitProducer;
+    private final KafkaTemplate<String, String> kafkaTemplate;
 
-    public UploadController(UploadService service, Environment env) {
+    public UploadController(UploadService service, KafkaTemplate<String, String> kafkaTemplate) {
         this.service = service;
-        this.env = env;
-    }
-
-    @PostConstruct
-    public void initStream() {
-        try { env.streamCreator().stream(RabbitConfig.SPLIT_QUEUE).create(); } catch (Throwable ignored) {}
-        splitProducer = env.producerBuilder().stream(RabbitConfig.SPLIT_QUEUE).build();
+        this.kafkaTemplate = kafkaTemplate;
     }
 
     @PostMapping("/init")
@@ -40,6 +33,7 @@ public class UploadController {
         resp.setChunkSize(task.getChunkSize());
         resp.setTotalChunks(service.totalChunks(task.getFileId()));
         resp.setUploadedIndices(service.uploadedIndices(task.getFileId()));
+        resp.setMissingIndices(service.missingIndices(task.getFileId()));
         resp.setResumed(resp.getUploadedIndices() != null && !resp.getUploadedIndices().isEmpty());
         return Result.success(resp);
     }
@@ -52,7 +46,13 @@ public class UploadController {
 
     @PostMapping("/{fileId}/merge")
     public Result<Void> merge(@PathVariable String fileId) throws Exception {
-        if (!service.canMerge(fileId)) return Result.error(400, "分片未完成");
+        if (!service.canMerge(fileId)) {
+            int done = service.doneChunks(fileId);
+            int total = service.totalChunks(fileId);
+            java.util.List<Integer> miss = service.missingIndices(fileId);
+            log.warn("merge rejected: fileId={}, done={}, total={}, missing={}", fileId, done, total, miss);
+            return Result.error(400, "分片未完成");
+        }
         service.markMerging(fileId);
         try{
             service.compose(fileId);
@@ -63,7 +63,7 @@ public class UploadController {
         service.finishMerged(fileId);
         String object = service.getStoragePath(fileId);
         String payload = "{\"fileId\":\"" + fileId + "\",\"object\":\"" + object + "\"}";
-        splitProducer.send(splitProducer.messageBuilder().addData(payload.getBytes()).build(), s -> {});
+        kafkaTemplate.send(RabbitConfig.SPLIT_QUEUE, fileId, payload);
         return Result.success();
     }
 
@@ -77,6 +77,8 @@ public class UploadController {
         resp.setTotalChunks(total);
         resp.setPercent(total == 0 ? 0.0 : (done * 1.0 / total));
         resp.setErrorMessage(service.getErrorMessage(fileId));
+        resp.setUploadedIndices(service.uploadedIndices(fileId));
+        resp.setMissingIndices(service.missingIndices(fileId));
         return Result.success(resp);
     }
 
@@ -84,5 +86,10 @@ public class UploadController {
     public Result<Void> abort(@PathVariable String fileId) {
         service.abort(fileId);
         return Result.success();
+    }
+
+    @GetMapping("/{fileId}/missing")
+    public Result<java.util.List<Integer>> missing(@PathVariable String fileId) {
+        return Result.success(service.missingIndices(fileId));
     }
 }

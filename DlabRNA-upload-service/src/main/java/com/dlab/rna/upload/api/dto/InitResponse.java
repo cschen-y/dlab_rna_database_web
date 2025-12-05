@@ -9,6 +9,7 @@ public class InitResponse {
     private Integer chunkSize;
     private Integer totalChunks;
     private List<Integer> uploadedIndices;
+    private List<Integer> missingIndices;
 
     public InitResponse() {}
     public InitResponse(String fileId, String objectName) {
@@ -27,4 +28,6 @@ public class InitResponse {
     public void setTotalChunks(Integer totalChunks) { this.totalChunks = totalChunks; }
     public List<Integer> getUploadedIndices() { return uploadedIndices; }
     public void setUploadedIndices(List<Integer> uploadedIndices) { this.uploadedIndices = uploadedIndices; }
+    public List<Integer> getMissingIndices() { return missingIndices; }
+    public void setMissingIndices(List<Integer> missingIndices) { this.missingIndices = missingIndices; }
 }

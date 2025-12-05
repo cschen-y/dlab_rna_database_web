@@ -2,7 +2,6 @@ package com.dlab.rna.upload.service;
 
 import com.dlab.rna.upload.config.StorageProperties;
 import com.dlab.rna.upload.model.UploadTask;
-import com.rabbitmq.stream.Environment;
 import com.dlab.rna.upload.mapper.UploadTaskMapper;
 import io.minio.ComposeObjectArgs;
 import io.minio.ComposeSource;
@@ -16,6 +15,7 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 
 import java.io.InputStream;
 import java.time.LocalDateTime;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
@@ -27,14 +27,12 @@ public class UploadService {
     private final StorageProperties props;
     private final StringRedisTemplate redis;
     private final UploadTaskMapper mapper;
-    private final Environment env;
 
-    public UploadService(MinioClient minioClient, StorageProperties props, StringRedisTemplate redis, UploadTaskMapper mapper, Environment env) {
+    public UploadService(MinioClient minioClient, StorageProperties props, StringRedisTemplate redis, UploadTaskMapper mapper) {
         this.minioClient = minioClient;
         this.props = props;
         this.redis = redis;
         this.mapper = mapper;
-        this.env = env;
     }
 
     @Transactional
@@ -80,8 +78,16 @@ public class UploadService {
         String object = fileId + "/chunks/" + index;
         Boolean exists = redis.opsForSet().isMember(keyParts(fileId), String.valueOf(index));
         if (Boolean.TRUE.equals(exists)) return object;
-        
-        
+        String lockKey = keyChunkLock(fileId, index);
+        Boolean locked = redis.opsForValue().setIfAbsent(lockKey, "1", Duration.ofMinutes(5));
+        if (Boolean.FALSE.equals(locked)) {
+            for (int i = 0; i < 60; i++) {
+                Thread.sleep(500);
+                Boolean done = redis.opsForSet().isMember(keyParts(fileId), String.valueOf(index));
+                if (Boolean.TRUE.equals(done)) return object;
+            }
+            throw new IllegalStateException("chunk busy");
+        }
         try (InputStream in = file.getInputStream()) {
             minioClient.putObject(PutObjectArgs.builder()
                     .bucket(props.getMinio().getBucket())
@@ -91,14 +97,27 @@ public class UploadService {
                     .build());
         }
         redis.opsForSet().add(keyParts(fileId), String.valueOf(index));
+        redis.delete(lockKey);
         return object;
     }
 
     public boolean canMerge(String fileId) {
         String state = redis.opsForValue().get(keyState(fileId));
+        if (!org.springframework.util.StringUtils.hasText(state)) {
+            UploadTask t = mapper.findByFileId(fileId);
+            state = t == null ? null : t.getState();
+            if (org.springframework.util.StringUtils.hasText(state)) redis.opsForValue().set(keyState(fileId), state);
+        }
         if (!"UPLOADING".equals(state)) return false;
         Object cc = redis.opsForHash().get(keyMeta(fileId), "chunkCount");
         int chunkCount = cc == null ? 0 : Integer.parseInt(cc.toString());
+        if (chunkCount == 0) {
+            UploadTask t = mapper.findByFileId(fileId);
+            if (t != null && t.getChunkCount() != null) {
+                chunkCount = t.getChunkCount();
+                redis.opsForHash().put(keyMeta(fileId), "chunkCount", String.valueOf(chunkCount));
+            }
+        }
         Long done = redis.opsForSet().size(keyParts(fileId));
         return done != null && done.intValue() == chunkCount;
     }
@@ -108,23 +127,35 @@ public class UploadService {
         String lockKey = keyLock(fileId);
         Boolean ok = redis.opsForValue().setIfAbsent(lockKey, "1");
         if (Boolean.FALSE.equals(ok)) return;
+        mapper.updateState(fileId, "MERGING", LocalDateTime.now());
         redis.opsForValue().set(keyState(fileId), "MERGING");
     }
 
     @Transactional
     public void finishMerged(String fileId) {
         mapper.updateState(fileId, "COMPLETED", LocalDateTime.now());
-        redis.opsForValue().set(keyState(fileId), "COMPLETED"); 
         redis.delete(keyLock(fileId));
-        redis.delete(keyError(fileId));
+        try { redis.delete(keyState(fileId)); } catch (Exception ignored) {}
+        try { redis.delete(keyError(fileId)); } catch (Exception ignored) {}
+        java.util.concurrent.CompletableFuture.runAsync(() -> {
+            try { Thread.sleep(500); } catch (InterruptedException ignored) {}
+            try { redis.delete(keyState(fileId)); } catch (Exception ignored) {}
+            try { redis.delete(keyError(fileId)); } catch (Exception ignored) {}
+        });
     }
 
     @Transactional
     public void failMerged(String fileId, String message) {
         mapper.updateState(fileId, "FAILED", LocalDateTime.now());
-        redis.opsForValue().set(keyState(fileId), "FAILED");
         if (org.springframework.util.StringUtils.hasText(message)) redis.opsForValue().set(keyError(fileId), message);
         redis.delete(keyLock(fileId));
+        try { redis.delete(keyState(fileId)); } catch (Exception ignored) {}
+        try { redis.delete(keyError(fileId)); } catch (Exception ignored) {}
+        java.util.concurrent.CompletableFuture.runAsync(() -> {
+            try { Thread.sleep(500); } catch (InterruptedException ignored) {}
+            try { redis.delete(keyState(fileId)); } catch (Exception ignored) {}
+            try { redis.delete(keyError(fileId)); } catch (Exception ignored) {}
+        });
     }
 
     public void compose(String fileId) throws Exception {
@@ -147,7 +178,13 @@ public class UploadService {
     }
 
     public String getState(String fileId) {
-        return redis.opsForValue().get(keyState(fileId));
+        String v = redis.opsForValue().get(keyState(fileId));
+        if (!org.springframework.util.StringUtils.hasText(v)) {
+            UploadTask t = mapper.findByFileId(fileId);
+            v = t == null ? null : t.getState();
+            if (org.springframework.util.StringUtils.hasText(v)) redis.opsForValue().set(keyState(fileId), v);
+        }
+        return v;
     }
 
     public String getErrorMessage(String fileId) {
@@ -166,12 +203,28 @@ public class UploadService {
 
     public int totalChunks(String fileId) {
         Object cc = redis.opsForHash().get(keyMeta(fileId), "chunkCount");
-        return cc == null ? 0 : Integer.parseInt(cc.toString());
+        int v = cc == null ? 0 : Integer.parseInt(cc.toString());
+        if (v == 0) {
+            UploadTask t = mapper.findByFileId(fileId);
+            if (t != null && t.getChunkCount() != null) {
+                v = t.getChunkCount();
+                redis.opsForHash().put(keyMeta(fileId), "chunkCount", String.valueOf(v));
+            }
+        }
+        return v;
     }
 
     public int chunkSize(String fileId) {
         Object cs = redis.opsForHash().get(keyMeta(fileId), "chunkSize");
-        return cs == null ? 0 : Integer.parseInt(cs.toString());
+        int v = cs == null ? 0 : Integer.parseInt(cs.toString());
+        if (v == 0) {
+            UploadTask t = mapper.findByFileId(fileId);
+            if (t != null && t.getChunkSize() != null) {
+                v = t.getChunkSize();
+                redis.opsForHash().put(keyMeta(fileId), "chunkSize", String.valueOf(v));
+            }
+        }
+        return v;
     }
 
     public java.util.List<Integer> uploadedIndices(String fileId) {
@@ -184,8 +237,24 @@ public class UploadService {
         return list;
     }
 
+    public java.util.List<Integer> missingIndices(String fileId) {
+        java.util.List<Integer> uploaded = uploadedIndices(fileId);
+        int total = totalChunks(fileId);
+        java.util.Set<Integer> set = new java.util.HashSet<>(uploaded);
+        java.util.List<Integer> list = new java.util.ArrayList<>();
+        for (int i = 0; i < total; i++) {
+            if (!set.contains(i)) list.add(i);
+        }
+        return list;
+    }
+
     public void abort(String fileId) {
-        redis.opsForValue().set(keyState(fileId), "CANCELLED");
+        mapper.updateState(fileId, "CANCELLED", LocalDateTime.now());
+        try { redis.delete(keyState(fileId)); } catch (Exception ignored) {}
+        java.util.concurrent.CompletableFuture.runAsync(() -> {
+            try { Thread.sleep(500); } catch (InterruptedException ignored) {}
+            try { redis.delete(keyState(fileId)); } catch (Exception ignored) {}
+        });
     }
 
     private String keyMeta(String fileId) { return "upload:" + fileId + ":meta"; }
@@ -194,4 +263,5 @@ public class UploadService {
     private String keyLock(String fileId) { return "upload:" + fileId + ":mergelock"; }
     private String keySha(String sha256) { return "upload:sha:" + sha256; }
     private String keyError(String fileId) { return "upload:" + fileId + ":error"; }
+    private String keyChunkLock(String fileId, int index) { return "upload:" + fileId + ":chunklock:" + index; }
 }
